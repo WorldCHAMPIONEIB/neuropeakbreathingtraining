@@ -2,12 +2,12 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Breathing Trainer</title>
+  <title>Breathing Trainer with Countdown Timer</title>
   <style>
     body {
       font-family: sans-serif;
-      margin: 20px;
       text-align: center;
+      margin: 20px;
     }
     canvas {
       border: 1px solid #ccc;
@@ -15,12 +15,12 @@
       display: block;
       background-color: #f9f9f9;
     }
-    button, input[type="range"] {
+    button, input[type="range"], input[type="number"] {
       font-size: 1rem;
-      padding: 10px 20px;
+      padding: 10px;
       margin: 10px;
     }
-    #timeCounter {
+    #timeCounter, #countdownDisplay {
       font-family: 'Courier New', Courier, monospace;
       font-size: 2rem;
       font-weight: bold;
@@ -31,7 +31,7 @@
       background: #000;
       color: #0f0;
     }
-    #volumeControl, #sessionArea {
+    #volumeControl, #sessionArea, #countdownTimer {
       margin: 20px auto;
       max-width: 800px;
     }
@@ -51,6 +51,7 @@
 </head>
 <body>
   <h1>Breathing Trainer</h1>
+  <!-- Breathing Trainer Section -->
   <canvas id="canvas" width="800" height="200"></canvas>
   <div>
     <button id="startButton">Start</button>
@@ -59,6 +60,7 @@
   <div>
     Elapsed Time: <span id="timeCounter">00:00</span>
   </div>
+  <!-- Volume Control for Breathing Trainer -->
   <div id="volumeControl">
     Volume: 
     <input type="range" id="volumeSlider" min="0" max="1" step="0.01" value="1">
@@ -75,238 +77,308 @@
           <th>Cycles Completed</th>
         </tr>
       </thead>
-      <tbody>
-      </tbody>
+      <tbody></tbody>
     </table>
   </div>
 
+  <h2>Countdown Timer</h2>
+  <!-- Countdown Timer Section -->
+  <div id="countdownTimer">
+    <label for="timerInput">Enter time (minutes):</label>
+    <input type="number" id="timerInput" min="0" step="0.1" value="1">
+    <br>
+    <button id="startTimerButton">Start Timer</button>
+    <button id="stopTimerButton" disabled>Stop Timer</button>
+    <button id="stopChimeButton" disabled>Stop Chime</button>
+    <div>
+      Time Remaining: <span id="countdownDisplay">00:00</span>
+    </div>
+  </div>
+
+  <!-- Breathing Trainer Module -->
   <script>
-    // Global state
-    let isRunning = false;
-    let startTime = null;       // For elapsed time (in ms)
-    let sessionStart = null;    // Date object for session start
-    let sessionCount = 0;
-    let animationFrameId;
-    let audioIntervalId;
-    let audioContext = null;
-    let masterGain = null;
-    let activeOscillators = []; // To track scheduled oscillators
-
-    // Volume state
-    let currentVolume = parseFloat(document.getElementById("volumeSlider").value);
-    let isMuted = false;
-    let previousVolume = currentVolume;
-
-    // Canvas elements
-    const canvas = document.getElementById("canvas");
-    const ctx = canvas.getContext("2d");
-
-    // UI elements
-    const startButton = document.getElementById("startButton");
-    const stopButton = document.getElementById("stopButton");
-    const timeCounter = document.getElementById("timeCounter");
-    const volumeSlider = document.getElementById("volumeSlider");
-    const muteButton = document.getElementById("muteButton");
-
-    // Breathing settings
-    const cycleDuration = 10; // seconds (4s inhale, 1s top hold, 4s exhale, 1s bottom hold)
-    const notes = [261.63, 293.66, 329.63, 349.23]; // Hz for inhale: do, re, mi, fa
-
-    // Computes breathing amplitude (0 to 1) for a given time t (in seconds)
-    function breathingAmplitude(t) {
-      const phase = t % cycleDuration;
-      if (phase < 4) {
-        return Math.sin((Math.PI / 2) * (phase / 4));
-      } else if (phase < 5) {
-        return 1;
-      } else if (phase < 9) {
-        const t2 = phase - 5;
-        return Math.sin((Math.PI / 2) * (1 - (t2 / 4)));
-      } else {
-        return 0;
-      }
-    }
-
-    // Draws the scrolling waveform on the canvas
-    function updateCanvas() {
-      if (!isRunning) return;
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    (function(){
+      // Module-local variables for the breathing trainer
+      let isRunning = false;
+      let startTime = null;       // in milliseconds
+      let sessionStart = null;    // Date object for session start
+      let sessionCount = 0;
+      let animationFrameId;
+      let audioIntervalId;
+      let audioContext = null;    // breathing trainer AudioContext
+      let masterGain = null;      // master gain node for volume control
+      let activeOscillators = [];
       
-      // Draw horizontal axis
-      ctx.strokeStyle = "#ccc";
-      ctx.beginPath();
-      ctx.moveTo(0, canvas.height / 2);
-      ctx.lineTo(canvas.width, canvas.height / 2);
-      ctx.stroke();
+      const canvas = document.getElementById("canvas");
+      const ctx = canvas.getContext("2d");
+      const startButton = document.getElementById("startButton");
+      const stopButton = document.getElementById("stopButton");
+      const timeCounter = document.getElementById("timeCounter");
       
-      const now = performance.now();
-      const elapsedSeconds = (now - startTime) / 1000;
-      const windowDuration = cycleDuration;
+      // Breathing settings: 4s inhale, 1s hold, 4s exhale, 1s hold = 10s cycle
+      const cycleDuration = 10;
+      const notes = [261.63, 293.66, 329.63, 349.23]; // Hz for do, re, mi, fa
       
-      ctx.strokeStyle = "#0077aa";
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      for (let x = 0; x <= canvas.width; x++) {
-        const t = elapsedSeconds - windowDuration + (x / canvas.width) * windowDuration;
-        const amp = breathingAmplitude(t);
-        const y = canvas.height - amp * canvas.height;
-        if (x === 0) {
-          ctx.moveTo(x, y);
+      function breathingAmplitude(t) {
+        const phase = t % cycleDuration;
+        if (phase < 4) {
+          return Math.sin((Math.PI/2) * (phase/4));
+        } else if (phase < 5) {
+          return 1;
+        } else if (phase < 9) {
+          return Math.sin((Math.PI/2) * (1 - ((phase - 5)/4)));
         } else {
-          ctx.lineTo(x, y);
+          return 0;
         }
       }
-      ctx.stroke();
-
-      // Draw current time marker
-      ctx.strokeStyle = "red";
-      ctx.beginPath();
-      ctx.moveTo(canvas.width - 1, 0);
-      ctx.lineTo(canvas.width - 1, canvas.height);
-      ctx.stroke();
-
-      animationFrameId = requestAnimationFrame(updateCanvas);
-    }
-
-    // Updates the digital timer (mm:ss)
-    function updateTimeCounter() {
-      if (!isRunning) return;
-      const now = performance.now();
-      const elapsedSeconds = (now - startTime) / 1000;
-      const minutes = Math.floor(elapsedSeconds / 60);
-      const seconds = Math.floor(elapsedSeconds % 60);
-      timeCounter.textContent = String(minutes).padStart(2, '0') + ":" + String(seconds).padStart(2, '0');
-      requestAnimationFrame(updateTimeCounter);
-    }
-
-    // Schedules one full audio cycle:
-    // - Inhale (0–4s): plays do, re, mi, fa (each for 1 sec)
-    // - Top hold (4–5s): silence
-    // - Exhale (5–9s): plays continuous "sooooo" (G4)
-    // - Bottom hold (9–10s): silence
-    function scheduleAudioCycle(cycleStartTime) {
-      // Inhale oscillator
-      const oscInhale = audioContext.createOscillator();
-      const gainNodeInhale = audioContext.createGain();
-      oscInhale.connect(gainNodeInhale);
-      gainNodeInhale.connect(masterGain);
       
-      gainNodeInhale.gain.setValueAtTime(1, cycleStartTime);
-      oscInhale.frequency.setValueAtTime(notes[0], cycleStartTime);
-      oscInhale.frequency.setValueAtTime(notes[1], cycleStartTime + 1);
-      oscInhale.frequency.setValueAtTime(notes[2], cycleStartTime + 2);
-      oscInhale.frequency.setValueAtTime(notes[3], cycleStartTime + 3);
-      oscInhale.start(cycleStartTime);
-      oscInhale.stop(cycleStartTime + 4);
-      activeOscillators.push(oscInhale);
-
-      // Exhale oscillator (after 1 sec of silence)
-      const oscExhale = audioContext.createOscillator();
-      const gainNodeExhale = audioContext.createGain();
-      oscExhale.connect(gainNodeExhale);
-      gainNodeExhale.connect(masterGain);
-      const soFrequency = 392.00; // G4 note for "sooooo"
-      oscExhale.frequency.setValueAtTime(soFrequency, cycleStartTime + 5);
-      gainNodeExhale.gain.setValueAtTime(1, cycleStartTime + 5);
-      oscExhale.start(cycleStartTime + 5);
-      oscExhale.stop(cycleStartTime + 9);
-      activeOscillators.push(oscExhale);
-    }
-
-    // Start breathing: initializes audio (if needed), resumes context, starts visual and audio cycles.
-    async function startBreathing() {
-      if (isRunning) return;
-      isRunning = true;
-      startTime = performance.now();
-      sessionStart = new Date();
-      startButton.disabled = true;
-      stopButton.disabled = false;
-
-      // Create audio context and master gain node on first start
-      if (!audioContext) {
-        audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        masterGain = audioContext.createGain();
-        masterGain.gain.value = currentVolume;
-        masterGain.connect(audioContext.destination);
-      }
-      await audioContext.resume();
-
-      // Schedule audio cycles
-      scheduleAudioCycle(audioContext.currentTime);
-      audioIntervalId = setInterval(() => {
-        scheduleAudioCycle(audioContext.currentTime);
-      }, cycleDuration * 1000);
-
-      animationFrameId = requestAnimationFrame(updateCanvas);
-      requestAnimationFrame(updateTimeCounter);
-    }
-
-    // Stop breathing: halts visual animation, cancels scheduled audio, stops active oscillators,
-    // suspends the audio context, and logs session metrics.
-    function stopBreathing() {
-      if (!isRunning) return;
-      isRunning = false;
-      startButton.disabled = false;
-      stopButton.disabled = true;
-      cancelAnimationFrame(animationFrameId);
-      clearInterval(audioIntervalId);
-
-      activeOscillators.forEach(osc => {
-        try {
-          osc.stop(audioContext.currentTime);
-        } catch (e) {}
-      });
-      activeOscillators = [];
-
-      if (audioContext && audioContext.state === "running") {
-        audioContext.suspend();
-      }
-
-      let sessionEndTime = performance.now();
-      let durationSec = ((sessionEndTime - startTime) / 1000).toFixed(1);
-      let cycles = Math.floor((sessionEndTime - startTime) / 1000 / cycleDuration);
-      sessionCount++;
-      const tableBody = document.querySelector("#sessionTable tbody");
-      const newRow = document.createElement("tr");
-      newRow.innerHTML = `<td>${sessionCount}</td>
-                          <td>${sessionStart.toLocaleTimeString()}</td>
-                          <td>${durationSec}</td>
-                          <td>${cycles}</td>`;
-      tableBody.appendChild(newRow);
-    }
-
-    // Attach volume and mute event listeners (only once)
-    volumeSlider.addEventListener("input", function() {
-      currentVolume = parseFloat(this.value);
-      if (masterGain && !isMuted) {
-        masterGain.gain.setValueAtTime(currentVolume, audioContext.currentTime);
-      }
-    });
-
-    muteButton.addEventListener("click", function() {
-      if (!isMuted) {
-        isMuted = true;
-        previousVolume = currentVolume;
-        currentVolume = 0;
-        volumeSlider.value = 0;
-        if (masterGain) {
-          masterGain.gain.setValueAtTime(0, audioContext.currentTime);
+      function updateCanvas() {
+        if (!isRunning) return;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        // Draw horizontal axis
+        ctx.strokeStyle = "#ccc";
+        ctx.beginPath();
+        ctx.moveTo(0, canvas.height/2);
+        ctx.lineTo(canvas.width, canvas.height/2);
+        ctx.stroke();
+        
+        const now = performance.now();
+        const elapsed = (now - startTime) / 1000;
+        const windowDuration = cycleDuration;
+        ctx.strokeStyle = "#0077aa";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        for (let x = 0; x <= canvas.width; x++) {
+          const t = elapsed - windowDuration + (x/canvas.width)*windowDuration;
+          const amp = breathingAmplitude(t);
+          const y = canvas.height - amp * canvas.height;
+          if (x === 0) {
+            ctx.moveTo(x, y);
+          } else {
+            ctx.lineTo(x, y);
+          }
         }
-        muteButton.textContent = "Unmute";
-      } else {
-        isMuted = false;
-        currentVolume = previousVolume;
-        volumeSlider.value = previousVolume;
-        if (masterGain) {
+        ctx.stroke();
+        // Draw current time marker (red line)
+        ctx.strokeStyle = "red";
+        ctx.beginPath();
+        ctx.moveTo(canvas.width - 1, 0);
+        ctx.lineTo(canvas.width - 1, canvas.height);
+        ctx.stroke();
+        animationFrameId = requestAnimationFrame(updateCanvas);
+      }
+      
+      function updateTimeCounter() {
+        if (!isRunning) return;
+        const now = performance.now();
+        const elapsed = (now - startTime) / 1000;
+        const minutes = Math.floor(elapsed/60);
+        const seconds = Math.floor(elapsed % 60);
+        timeCounter.textContent = String(minutes).padStart(2, '0') + ":" + String(seconds).padStart(2, '0');
+        requestAnimationFrame(updateTimeCounter);
+      }
+      
+      function scheduleAudioCycle(startTimeAudio) {
+        // Inhale oscillator: plays do, re, mi, fa (each for 1 second)
+        const oscInhale = audioContext.createOscillator();
+        const gainInhale = audioContext.createGain();
+        oscInhale.connect(gainInhale);
+        gainInhale.connect(masterGain);
+        gainInhale.gain.setValueAtTime(1, startTimeAudio);
+        oscInhale.frequency.setValueAtTime(notes[0], startTimeAudio);
+        oscInhale.frequency.setValueAtTime(notes[1], startTimeAudio + 1);
+        oscInhale.frequency.setValueAtTime(notes[2], startTimeAudio + 2);
+        oscInhale.frequency.setValueAtTime(notes[3], startTimeAudio + 3);
+        oscInhale.start(startTimeAudio);
+        oscInhale.stop(startTimeAudio + 4);
+        activeOscillators.push(oscInhale);
+        
+        // Exhale oscillator: after a 1-second pause, plays continuous "sooooo" note (G4) for 4 seconds
+        const oscExhale = audioContext.createOscillator();
+        const gainExhale = audioContext.createGain();
+        oscExhale.connect(gainExhale);
+        gainExhale.connect(masterGain);
+        const soFrequency = 392.00;
+        oscExhale.frequency.setValueAtTime(soFrequency, startTimeAudio + 5);
+        gainExhale.gain.setValueAtTime(1, startTimeAudio + 5);
+        oscExhale.start(startTimeAudio + 5);
+        oscExhale.stop(startTimeAudio + 9);
+        activeOscillators.push(oscExhale);
+      }
+      
+      async function startBreathing() {
+        if (isRunning) return;
+        isRunning = true;
+        startTime = performance.now();
+        sessionStart = new Date();
+        startButton.disabled = true;
+        stopButton.disabled = false;
+        if (!audioContext) {
+          audioContext = new (window.AudioContext || window.webkitAudioContext)();
+          masterGain = audioContext.createGain();
+          // Initialize masterGain with the slider's value
+          const vol = parseFloat(document.getElementById("volumeSlider").value);
+          masterGain.gain.setValueAtTime(vol, audioContext.currentTime);
+          masterGain.connect(audioContext.destination);
+        }
+        await audioContext.resume();
+        scheduleAudioCycle(audioContext.currentTime);
+        audioIntervalId = setInterval(() => {
+          scheduleAudioCycle(audioContext.currentTime);
+        }, cycleDuration * 1000);
+        animationFrameId = requestAnimationFrame(updateCanvas);
+        requestAnimationFrame(updateTimeCounter);
+      }
+      
+      function stopBreathing() {
+        if (!isRunning) return;
+        isRunning = false;
+        startButton.disabled = false;
+        stopButton.disabled = true;
+        cancelAnimationFrame(animationFrameId);
+        clearInterval(audioIntervalId);
+        activeOscillators.forEach(osc => {
+          try { osc.stop(audioContext.currentTime); } catch(e) {}
+        });
+        activeOscillators = [];
+        if (audioContext && audioContext.state === "running") {
+          audioContext.suspend();
+        }
+        const sessionEnd = performance.now();
+        const durationSec = ((sessionEnd - startTime) / 1000).toFixed(1);
+        const cycles = Math.floor((sessionEnd - startTime) / 1000 / cycleDuration);
+        sessionCount++;
+        const tbody = document.querySelector("#sessionTable tbody");
+        const newRow = document.createElement("tr");
+        newRow.innerHTML = `<td>${sessionCount}</td><td>${sessionStart.toLocaleTimeString()}</td><td>${durationSec}</td><td>${cycles}</td>`;
+        tbody.appendChild(newRow);
+      }
+      
+      // Volume and mute controls
+      const volumeSlider = document.getElementById("volumeSlider");
+      const muteButton = document.getElementById("muteButton");
+      let currentVolume = parseFloat(volumeSlider.value);
+      let isMuted = false;
+      let previousVolume = currentVolume;
+      
+      volumeSlider.addEventListener("input", function(){
+        currentVolume = parseFloat(this.value);
+        if (audioContext && masterGain && !isMuted) {
           masterGain.gain.setValueAtTime(currentVolume, audioContext.currentTime);
         }
-        muteButton.textContent = "Mute";
+      });
+      
+      muteButton.addEventListener("click", function(){
+        if (!isMuted) {
+          isMuted = true;
+          previousVolume = currentVolume;
+          currentVolume = 0;
+          volumeSlider.value = 0;
+          if (audioContext && masterGain) {
+            masterGain.gain.setValueAtTime(0, audioContext.currentTime);
+          }
+          muteButton.textContent = "Unmute";
+        } else {
+          isMuted = false;
+          currentVolume = previousVolume;
+          volumeSlider.value = previousVolume;
+          if (audioContext && masterGain) {
+            masterGain.gain.setValueAtTime(currentVolume, audioContext.currentTime);
+          }
+          muteButton.textContent = "Mute";
+        }
+      });
+      
+      startButton.addEventListener("click", startBreathing);
+      stopButton.addEventListener("click", stopBreathing);
+    })();
+  </script>
+  
+  <!-- Countdown Timer Module -->
+  <script>
+    (function(){
+      // Module-local variables for the countdown timer
+      let countdownIntervalId = null;
+      let remainingSeconds = 0;
+      let audioContextChime = null;
+      let chimeIntervalId = null;
+      const timerInput = document.getElementById("timerInput");
+      const startTimerButton = document.getElementById("startTimerButton");
+      const stopTimerButton = document.getElementById("stopTimerButton");
+      const stopChimeButton = document.getElementById("stopChimeButton");
+      const countdownDisplay = document.getElementById("countdownDisplay");
+      
+      function updateCountdownDisplay() {
+        const minutes = Math.floor(remainingSeconds / 60);
+        const seconds = remainingSeconds % 60;
+        countdownDisplay.textContent = String(minutes).padStart(2, '0') + ":" + String(seconds).padStart(2, '0');
       }
-    });
-
-    // Attach start/stop event listeners
-    startButton.addEventListener("click", startBreathing);
-    stopButton.addEventListener("click", stopBreathing);
+      
+      function startTimer() {
+        let mins = parseFloat(timerInput.value);
+        if (isNaN(mins) || mins <= 0) {
+          alert("Enter a valid positive number of minutes.");
+          return;
+        }
+        remainingSeconds = Math.floor(mins * 60);
+        startTimerButton.disabled = true;
+        stopTimerButton.disabled = false;
+        updateCountdownDisplay();
+        countdownIntervalId = setInterval(() => {
+          remainingSeconds--;
+          if (remainingSeconds <= 0) {
+            clearInterval(countdownIntervalId);
+            remainingSeconds = 0;
+            updateCountdownDisplay();
+            startChimeSequence();
+            startTimerButton.disabled = false;
+            stopTimerButton.disabled = true;
+          } else {
+            updateCountdownDisplay();
+          }
+        }, 1000);
+      }
+      
+      function stopTimer() {
+        clearInterval(countdownIntervalId);
+        countdownIntervalId = null;
+        startTimerButton.disabled = false;
+        stopTimerButton.disabled = true;
+      }
+      
+      function playChimeNote() {
+        if (!audioContextChime) {
+          audioContextChime = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        const osc = audioContextChime.createOscillator();
+        const gainNode = audioContextChime.createGain();
+        osc.connect(gainNode);
+        gainNode.connect(audioContextChime.destination);
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(880, audioContextChime.currentTime);
+        gainNode.gain.setValueAtTime(0.5, audioContextChime.currentTime);
+        osc.start(audioContextChime.currentTime);
+        osc.stop(audioContextChime.currentTime + 0.1);
+      }
+      
+      function startChimeSequence() {
+        playChimeNote();
+        chimeIntervalId = setInterval(playChimeNote, 600);
+        stopChimeButton.disabled = false;
+      }
+      
+      function stopChimeSequence() {
+        if (chimeIntervalId !== null) {
+          clearInterval(chimeIntervalId);
+          chimeIntervalId = null;
+        }
+        stopChimeButton.disabled = true;
+      }
+      
+      startTimerButton.addEventListener("click", startTimer);
+      stopTimerButton.addEventListener("click", stopTimer);
+      stopChimeButton.addEventListener("click", stopChimeSequence);
+    })();
   </script>
 </body>
 </html>
